@@ -106,6 +106,7 @@ During this exercise, the following references will be essential.
 * https://docs.hazelcast.org/docs/latest/javadoc//index.html?com/hazelcast/jet/pipeline/Sources.html
 * https://docs.hazelcast.org/docs/latest/javadoc//index.html?com/hazelcast/jet/pipeline/Sinks.html
 * https://docs.hazelcast.org/docs/latest/javadoc/index.html?com/hazelcast/jet/pipeline/StreamStage.html
+* https://docs.hazelcast.org/docs/latest/javadoc//index.html?com/hazelcast/jet/datamodel/Tuple2.html
 
 
 First, let's take a quick tour of the code base.  The skeleton for the scoring 
@@ -151,7 +152,21 @@ cd ..
 Verfiy that you now have a `gcp-credentials.json` file in the `scoring-pipeline` 
 directory.
 
+[start=3]
+. Compile the `scoring-pipeline` project.  This will ensure that generate the 
+protobuf-defined classes so they will be available before you open the 
+poject in an IDE.
+[source, bash]
+----
+cd scoring-pipeline
+mvn compile
+cd ..
+----
+
+
 === Create a Stream Source to Read the Data
+
+Now open the `scoring-pipeline` project in an IDE.
 
 In the `buildPipeline` method, use `readFrom` to read events from the `auth_requests`
 map.  The key of this map is a String and the value is a protobuf-serialized 
@@ -187,21 +202,187 @@ Now let's build and deploy the pipeline.
 [source, bash]
 ----
 cd scoring-pipeline
-
+mvn package
+cd ..
+./submitjob.sh
+# wait for the job to be deployed, then check the logs
+docker compose logs --follow hazelcast
 ----
+
+You should see output similar to what is shown below.
+[source]
+----
+automl-hazelcast-1  | 2022-12-20 19:30:17,747 [ INFO] [hz.stoic_diffie.jet.blocking.thread-6] [c.h.j.i.c.WriteLoggerP]: [172.22.0.5]:5701 [dev] [5.2.0] [fraud-prediction/loggerSink#0] gender: "F"
+automl-hazelcast-1  | city: "Royal Oak"
+automl-hazelcast-1  | state: "MI"
+automl-hazelcast-1  | lat: "42.4906"
+automl-hazelcast-1  | long: "-83.1366"
+automl-hazelcast-1  | city_pop: "57256"
+automl-hazelcast-1  | job: "Insurance claims handler"
+automl-hazelcast-1  | dob: "1950-12-23"
+automl-hazelcast-1  | category: "grocery_pos"
+automl-hazelcast-1  | amt: "64.33"
+automl-hazelcast-1  | merchant: "fraud_Stracke-Lemke"
+automl-hazelcast-1  | merch_lat: "43.085576"
+automl-hazelcast-1  | merch_long: "-82.627076\n"
+----
+
+Finally, use the `canceljob.sh` script to undeploy the job before continuing.  
+
+=== Format the Request and Call the Model Endpoint on GCP
+
+In the previous step, we learned that `readFrom` is used to begin a pipeline and 
+`writeTo` terminates a pipeline, sending processed events or decisions to an 
+external system (or just logging them in this case).  We also saw that a `map` step 
+is used to transform the events in the stream. In this step, we will use 
+`mapUsingService` to transform the events based on an external service.  
+
+Generally, when we connect to any sort of external service, there is some cost 
+to creating a connection and we don't want to do that each time we process an 
+event.  This is the reason we need `mapUsingService`. We first create a service 
+by telling Hazelcast how to connect.
+
+[source, java]
+----
+ServiceFactory<?, AutoMLTabularPredictionClient> predictionService =
+        ServiceFactories.nonSharedService(c -> new AutoMLTabularPredictionClient(
+                modelProject,
+                modelLocation,
+                modelEndpointId,
+                credentials)).toNonCooperative();
+----
+
+One service instance will be created in each node (this can be cofigured).  Once 
+created, service instances are reused.  
+
+The next 2 steps are converting the `AuthRequestV0` pojo into the generic 
+protobuf map required by the endpoint, and then calling the service.  This 
+is done as shown below.  Lastly, to aid with debugging, you can change the 
+final `writeTo` step to write the results of the prediction.
+
+[source, java]
+----
+// extract the fields of interest from the POJO and format as a protobuf Struct as required for the Vertex AI endpoint
+StreamStage<Tuple2<AuthRequestv01, Struct>> authReqProtos =
+        authRequests.map(authReq -> tuple2(authReq, authRequestToFeature(authReq)))
+                .setName("map to predict api features");
+
+// use the custom prediction service to obtain a PredictionResponse, wrap the response in a helper class for ease of use
+StreamStage<Tuple2<AuthRequestv01, AutoMLTabularPredictionClient.PredictResponseExtractor>> predictions
+        = authReqProtos.mapUsingService(predictionService, (ps, tuple) -> tuple2(tuple.f0(), ps.predict(tuple.f1())))
+        .setName("call predict api");
+
+predictions.writeTo(Sinks.logger());
+----
+
+You can now build and deploy as you did before.  You should see output similar to
+the following.
+
+[source]
+----
+automl-hazelcast-1        | 2022-12-20 20:24:23,353 [ INFO] [hz.stoic_diffie.jet.blocking.thread-10] [c.h.j.i.c.WriteLoggerP]: [172.22.0.5]:5701 [dev] [5.2.0] [fraud-prediction/loggerSink#0] (gender: "M"
+automl-hazelcast-1        | city: "Mason"
+automl-hazelcast-1        | state: "OH"
+automl-hazelcast-1        | lat: "39.3357"
+automl-hazelcast-1        | long: "-84.3149"
+automl-hazelcast-1        | city_pop: "50627"
+automl-hazelcast-1        | job: "Chartered accountant"
+automl-hazelcast-1        | dob: "2001-02-11"
+automl-hazelcast-1        | category: "kids_pets"
+automl-hazelcast-1        | amt: "141.29"
+automl-hazelcast-1        | merchant: "fraud_Hilpert-Conroy"
+automl-hazelcast-1        | merch_lat: "38.756688"
+automl-hazelcast-1        | merch_long: "-85.314782\n"
+automl-hazelcast-1        | , PredictResponseExtractor{response=predictions {
+automl-hazelcast-1        |   struct_value {
+automl-hazelcast-1        |     fields {
+automl-hazelcast-1        |       key: "classes"
+automl-hazelcast-1        |       value {
+automl-hazelcast-1        |         list_value {
+automl-hazelcast-1        |           values {
+automl-hazelcast-1        |             string_value: "0"
+automl-hazelcast-1        |           }
+automl-hazelcast-1        |           values {
+automl-hazelcast-1        |             string_value: "1"
+automl-hazelcast-1        |           }
+automl-hazelcast-1        |         }
+automl-hazelcast-1        |       }
+automl-hazelcast-1        |     }
+automl-hazelcast-1        |     fields {
+automl-hazelcast-1        |       key: "scores"
+automl-hazelcast-1        |       value {
+automl-hazelcast-1        |         list_value {
+automl-hazelcast-1        |           values {
+automl-hazelcast-1        |             number_value: 0.9885889291763306
+automl-hazelcast-1        |           }
+automl-hazelcast-1        |           values {
+automl-hazelcast-1        |             number_value: 0.01141107082366943
+automl-hazelcast-1        |           }
+automl-hazelcast-1        |         }
+automl-hazelcast-1        |       }
+automl-hazelcast-1        |     }
+automl-hazelcast-1        |   }
+automl-hazelcast-1        | }
+automl-hazelcast-1        | deployed_model_id: "1479938252939984896"
+automl-hazelcast-1        | model: "projects/1097314672797/locations/us-central1/models/54537975760945152"
+automl-hazelcast-1        | model_display_name: "fraud_detection_2"
+automl-hazelcast-1        | model_version_id: "1"
+automl-hazelcast-1        | , succeeded=true})
+----
+
+=== Finish the Pipeline
+
+As you can see from the output, calling the prediction API does not yield a decision 
+but a set of probabilities associated with each class.   In this case the classes are 
+"1" for fraudulent and "0" for non-fraudulent. In this step we will finish the 
+Pipeline by turning result from the model endpoint into a decision.
+
+First, we use a new verb, `filter` to eliminate those prediction results that 
+failed for any reason.  Note that, with a `map` operation, the number of events
+in and out are equal.  With the `filter` operation, the number of events 
+exiting the stage can be less than those entering the stage.
+
+[source, java]
+----
+StreamStage<Tuple2<AuthRequestv01, AutoMLTabularPredictionClient.PredictResponseExtractor>> goodPredictions
+        = predictions.filter(t2 -> t2.f1().isSucceeded()).setName("filter out exceptions");
+----
+
+To finish up, we need to turn the list of probabilities into a decision and 
+log the result. 
+
+[source, java]
+----
+// based on the confidence scores in the prediction response, make a fraud prediction
+StreamStage<Tuple2<AuthRequestv01, Boolean>> decisions =
+        goodPredictions.map((tuple) -> tuple2(tuple.f0(), tuple.f1().getPrediction(0, "1") > fraudConfidenceThreshold))
+                .setName("classify");
+
+// output the decision
+decisions.writeTo(Sinks.logger((t) -> (t.f1() ? "DECLINED " : "APPROVED") + t.f0().getAmt() + " on " + t.f0().getCategory() + " in " + t.f0().getCity() + ", " + t.f0().getState()));
+----
+
+Re-deploy the job once more to see the final result.
+
+[source]
+----
+automl-hazelcast-1        | 2022-12-20 20:44:37,280 [ INFO] [hz.stoic_diffie.jet.blocking.thread-16] [c.h.j.i.c.WriteLoggerP]: [172.22.0.5]:5701 [dev] [5.2.0] [fraud-prediction/loggerSink#0] APPROVED60.52 on grocery_net in Grayling, MI
+----
+
+You can also log in to the Google Cloud Console and check on the end point.
+
+image::gcp.png[GCP]
+
+Congratulations!  You've finished this tutorial.
 
 == Summary
 
-////
-Summarise what knowledge the reader has gained by completing the tutorial, including a summary of each step's goals (this is a good way to validate whether your tutorial has covered all you need it to.)
-////
-
+This tutorial was a basic introduction to using Hazelcast Pipelines for 
+operationalizing ML and specifically for incorporating Vertex API endpoints 
+hosted on GCP. 
 
 == Credits
 
 The data for this data set was generated by https://github.com/wrmay/Sparkov_Data_Generation, which is a fork of 
 https://github.com/namebrandon/Sparkov_Data_Generation with very minor modifications.
 
-== See Also
-
-// Optionally, add some links to resources, such as other related guides.

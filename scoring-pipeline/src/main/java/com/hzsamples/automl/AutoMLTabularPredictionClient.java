@@ -111,6 +111,16 @@ public class AutoMLTabularPredictionClient  {
             return response.getPredictions(predictionNumber).getStructValue().getFieldsOrThrow("scores")
                     .getListValue().getValues(i).getNumberValue();
         }
+
+        @Override
+        public String toString() {
+            return "PredictResponseExtractor{" +
+                    "response=" + response +
+                    ", succeeded=" + succeeded +
+                    '}';
+        }
     }
+
+
 
 }
