@@ -1,0 +1,207 @@
+= Using AutoML in a Hazelcast Pipeline
+:page-layout: tutorial
+:page-product: platform
+:page-categories: Machine Learning, Google Cloud Platform
+:page-lang: java 
+:page-enterprise: 
+:page-est-time: 60 minutes
+:description: Train a model using Google's AutoML and incorporate it into a Hazelcast model serving pipeline.
+
+{description}
+
+== Context
+
+This example demonstrates using a Hazelcast Pipeline as an ML scoring service.  You will learn the basics of Hazelcast Pipelines and how to integrate with an external 
+service.  
+
+NOTE: A typical ML pipeline would include data manipulation and augmentation tasks to develop a feature vector from incoming events, and a scoring task that involves using an ML model to make a prediction.  In this tutorial, we are focused only on the scoring tasks and we will leverage a model trained and hosted in Google Cloud.
+
+The diagram below is a schematic of what we will build in this tutorial.
+
+image::pipeline.png[Pipeline]
+
+== Before you Begin
+
+You will need the following prerequisites to complete this tutorial.
+
+* A Google Cloud Platform account (this will be used to develop the model and host it on an endpoint)
+* Docker Desktop on your local machine
+* Maven on your local machine
+* A Java IDE 
+* Basic knowledge of Java.  Knowledge of functional programming constructs will be 
+especially helpful.
+
+== Step 1. Train a Model with VertexAI 
+
+In this step, we will create a simple ML model for fraud detection and train it using a publicly available data set. 
+
+. Sign in to the Google Cloud Console (console.cloud.google.com)  and navigate to the Vertex AI dashboard
+. Click "Create Dataset" and select the "Tabular" type.  Upload the following data set from Google storage: `gs://rmay/automl/train.csv`
+. Once the upload completes, select "Train New Model".  Select the "Classification" objective and the "AutoML" training method. 
+. On the next page, select `is_fraud` as the column containing the correct classification.
+. On the next page, select the fields to use for training purposes. Note that all 
+fields are selected by default.  *Unselect* the fields that are not listed in `card_fraud.proto` (copied below). When only the listed fields are selected,
+click "Continue".
++
+```
+message AuthRequestv01 {
+    string gender = 1;
+    string city = 2;
+    string state = 3;
+    string lat = 4;
+    string long = 5;
+    string city_pop = 6;
+    string job = 7;
+    string dob = 8;
+    string category = 9;
+    string amt = 10;
+    string merchant = 11;
+    string merch_lat = 12;
+    string merch_long = 13;
+}
+```
+NOTE: This step is mandatory because the training data you use in this step must match the data that is provided during the scoring step.  However, this dialog is a little tricky.  The check boxes on the left aren't helpful for including and excluding fields.  The right most column consists of +/- buttons.  By default, everything is included so you need to click the +/- button on each row that should not be a part of the model.  When a row is excluded, it is displayed in lighter gray font.  When you are done, check that each of the 13 relevant fields is included in the model, as well as the "is_fraud" field for a total of 14.
+. On the next page, provide a training budget and start the training process. A training budget of 1 hr. is sufficient to obtain a usable model.  
+
++
+TIP: This is a good time to go get coffee or tea!  Given a one hour training budget, the process will take 90-120 minutes.
+
+
+== Step 2. Deploy the Model to an Endpoint
+
+Once the training is finished, you can expose the model as an endpoint using the following procedure.
+
+. From the Vertex AI dashboard, navigate to model repository > my model > select version > Deploy and Test > Deploy to Endpoint
+. Click through the wizard, selecting defaults.  Since this is not a production scenario, disable model monitoring.
+
+Once the model has been deployed, note the region and the model-id.  These will be needed to configure the Hazelcast pipeline.
+
+== Step 3. Start Hazelcast, the Data Loader and Management Center 
+
+In this step, you will deploy a single-node cluster and Hazelcast Management Center using the standard Docker images. Run the following commands to start everything:
+
+```bash
+docker compose up -d
+```
+
+NOTE: If you wish to see how each process is started, see `compose.yaml`
+
+Within a few minutes, you should be able to access the Hazelcast Management Center 
+at http://localhost:8080. You will need to click on "Enable Dev Mode", which starts 
+Management Center with no authentication.  Use management center to verify that 
+there is map named `auth_requests` which is receiving traffic.  
+
+You can also use management center to verify that there are currently no jobs
+running.  The relevant sections are highlighted on the image below.
+
+image::mancenter.png[Management Center]
+
+== Step 4.Build and Deploy a Scoring Pipeline
+
+In this step, you will build the scoring pipeline, package it as a jar and deploy it to the running  cluster using the Hazelcast CLI.
+
+During this exercise, the following references will be essential.
+
+* https://docs.hazelcast.com/hazelcast/latest/pipelines/overview
+* https://docs.hazelcast.org/docs/latest/javadoc//index.html?com/hazelcast/jet/pipeline/Sources.html
+* https://docs.hazelcast.org/docs/latest/javadoc//index.html?com/hazelcast/jet/pipeline/Sinks.html
+* https://docs.hazelcast.org/docs/latest/javadoc/index.html?com/hazelcast/jet/pipeline/StreamStage.html
+
+
+First, let's take a quick tour of the code base.  The skeleton for the scoring 
+pipeline is in  `scoring-pipeline`, which is just a maven based Java project. 
+
+[horizontal]
+com.hzsamples.automl.PredictionPipeline.java:: This is where you will implement the scoring pipleine.  The `buildPipeline` method constructs the pipeline.
+com.hzsamples.automl.AutoMLTabularPredictionClient:: This helper class wraps the Google API and simplifies 
+certain tasks such as authentication.
+com.hzsamples.automl.solution.PredictionPipeline.java:: A working solution for 
+your reference.
+
+In the root directory, there are 2 scripts which you can use to submit and cancel 
+your pipeline.
+
+[horizontal]
+submitjob.sh:: Submits the pipeline to the running Hazelcast cluster.  Note that this 
+script passes in pointers to the Google Cloud endpoint which you will need to edit.
+canceljob.sh:: Cancels the running job.
+
+In this tutorial, we will take an interative approach. Generally, the process will 
+follow these steps: code > build > deploy > test > undeploy > repeat .
+
+=== Setup
+. Before getting started, edit `submitjob.sh` to include the correct project, region 
+and endpoint id for your model.  
+
+TIP: Use the full name of your GCP project, not the short name that displays at t
+the top-left of your cloud console window.  You can hover over the project selection 
+drop-down to see the full name of your project.
+
+[start=2]
+. You will also need to sign in to your Google Cloud account and obtain credentials.
+The credentials will be used by the Hazelcast Pipeline to access the model endpoint.
+
+[source, bash]
+----
+cd scoring-pipeline
+./retrieve_gcp_credentials.sh
+cd ..
+----
+
+Verfiy that you now have a `gcp-credentials.json` file in the `scoring-pipeline` 
+directory.
+
+=== Create a Stream Source to Read the Data
+
+In the `buildPipeline` method, use `readFrom` to read events from the `auth_requests`
+map.  The key of this map is a String and the value is a protobuf-serialized 
+`AuthRequest` message as defined in `card-fraud.proto`.
+
+
+[source, java]
+----
+StreamStage<Map.Entry<String, byte[]>> serializedAuthRequests = result.readFrom(
+        Sources.<String, byte[]>mapJournal("auth_requests", JournalInitialPosition.START_FROM_OLDEST))
+        .withIngestionTimestamps().setName("Input");
+----
+
+Next, use the `StreamStage.map` method to unpack the byte array into a POJO:
+ `AuthRequestV0`.
+
+[source, java]
+----
+StreamStage<AuthRequestv01> authRequests =
+        serializedAuthRequests.map(entry -> AuthRequestv01.parseFrom(entry.getValue()))
+                .setName("deserialize Proto");
+----
+
+Now, write each event to a log so we can see what we have so far.
+
+[source, java]
+----
+authRequests.writeTo(Sinks.logger());
+----
+
+Now let's build and deploy the pipeline.  
+
+[source, bash]
+----
+cd scoring-pipeline
+
+----
+
+== Summary
+
+////
+Summarise what knowledge the reader has gained by completing the tutorial, including a summary of each step's goals (this is a good way to validate whether your tutorial has covered all you need it to.)
+////
+
+
+== Credits
+
+The data for this data set was generated by https://github.com/wrmay/Sparkov_Data_Generation, which is a fork of 
+https://github.com/namebrandon/Sparkov_Data_Generation with very minor modifications.
+
+== See Also
+
+// Optionally, add some links to resources, such as other related guides.

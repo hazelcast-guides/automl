@@ -1,0 +1,27 @@
+version: "3"
+services:
+  hazelcast:
+    image: hazelcast/hazelcast:5.2.0
+    environment:
+      JAVA_OPTS: -Dhazelcast.config=/opt/project/config/hazelcast.yaml
+    volumes:
+      - ".:/opt/project"
+
+  mancenter:
+    image: hazelcast/management-center:5.2.0
+    environment:
+      MC_DEFAULT_CLUSTER: dev
+      MC_DEFAULT_CLUSTER_MEMBERS: hazelcast:5701
+    ports:
+      - "8080:8080"
+
+  hazelcast-shell:
+    image: hazelcast/hazelcast:5.2.0
+    command: tail -f /dev/null
+    volumes:
+      - ".:/opt/project"
+
+  event-sender:
+    build:
+      context: event-sender
+    command: python eventsender.py --dir data --tps 10 --hz-members hazelcast:5701 
