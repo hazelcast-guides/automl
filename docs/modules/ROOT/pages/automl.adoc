@@ -4,21 +4,27 @@
 :page-categories: Machine Learning, Google Cloud Platform
 :page-lang: java 
 :page-enterprise: 
-:page-est-time: 60 minutes
-:description: Train a model using Google's AutoML and incorporate it into a Hazelcast model serving pipeline.
+:page-est-time: 60 minutes active time plus 90 minutes model training time
+:description: Learn how to train a fraud detection model using Google's AutoML and operationalize it using Hazelcast Pipelines.
 
 {description}
 
 == Context
 
-This example demonstrates using a Hazelcast Pipeline as an ML scoring service.  You will learn the basics of Hazelcast Pipelines and how to integrate with an external 
-service.  
-
-NOTE: A typical ML pipeline would include data manipulation and augmentation tasks to develop a feature vector from incoming events, and a scoring task that involves using an ML model to make a prediction.  In this tutorial, we are focused only on the scoring tasks and we will leverage a model trained and hosted in Google Cloud.
+This example demonstrates using a Hazelcast Pipeline as an ML scoring service.  You will learn the basics of Hazelcast Pipelines and how to integrate with a model endpoint hosted on Google Cloud.  The same technique can be generalized to leverage any external service.
 
 The diagram below is a schematic of what we will build in this tutorial.
 
 image::pipeline.png[Pipeline]
+
+NOTE: This tutorial is focused only on the integration with Google Cloud and it might seem that it would be 
+simpler to just call the GCP endpoint directly.  However, a typical pipeline for operationalizing ML would 
+include additional steps for augmenting and formatting the input feature vector.  In this example, the input 
+event would only include basic information like the credit card number, point of sale terminal and amount. The final 
+input feature vector includes additional fields which would have to be looked up.  This sort of data manipulation 
+and augmentation in real time is something for which the Hazelcast platform is ideally suited.  Hazelcast allows 
+the whole end-to-end process of developing the input feature vector and scoring the model to be hosted on a 
+single, fault tolerant, high performance platform.
 
 == Before you Begin
 
@@ -84,12 +90,12 @@ In this step, you will deploy a single-node cluster and Hazelcast Management Cen
 docker compose up -d
 ```
 
-NOTE: If you wish to see how each process is started, see `compose.yaml`
+NOTE: The `compose.yaml` file contains the instructions used to start each process.
 
 Within a few minutes, you should be able to access the Hazelcast Management Center 
 at http://localhost:8080. You will need to click on "Enable Dev Mode", which starts 
 Management Center with no authentication.  Use management center to verify that 
-there is map named `auth_requests` which is receiving traffic.  
+there is a map named `auth_requests` which is receiving traffic.  
 
 You can also use management center to verify that there are currently no jobs
 running.  The relevant sections are highlighted on the image below.
@@ -112,17 +118,15 @@ During this exercise, the following references will be essential.
 First, let's take a quick tour of the code base.  The skeleton for the scoring 
 pipeline is in  `scoring-pipeline`, which is just a maven based Java project. 
 
-[horizontal]
-com.hzsamples.automl.PredictionPipeline.java:: This is where you will implement the scoring pipleine.  The `buildPipeline` method constructs the pipeline.
+com.hzsamples.automl.PredictionPipeline.java:: This is where you will implement the scoring pipeline.  The `buildPipeline` method 
+constructs the pipeline.
 com.hzsamples.automl.AutoMLTabularPredictionClient:: This helper class wraps the Google API and simplifies 
 certain tasks such as authentication.
 com.hzsamples.automl.solution.PredictionPipeline.java:: A working solution for 
 your reference.
 
-In the root directory, there are 2 scripts which you can use to submit and cancel 
-your pipeline.
+In the root directory, there are 2 scripts which you can use to submit and cancel your pipeline.
 
-[horizontal]
 submitjob.sh:: Submits the pipeline to the running Hazelcast cluster.  Note that this 
 script passes in pointers to the Google Cloud endpoint which you will need to edit.
 canceljob.sh:: Cancels the running job.
@@ -134,7 +138,8 @@ follow these steps: code > build > deploy > test > undeploy > repeat .
 . Before getting started, edit `submitjob.sh` to include the correct project, region 
 and endpoint id for your model.  
 
-TIP: Use the full name of your GCP project, not the short name that displays at t
++
+TIP: Use the full name of your GCP project, not the short name that displays at 
 the top-left of your cloud console window.  You can hover over the project selection 
 drop-down to see the full name of your project.
 
@@ -142,6 +147,7 @@ drop-down to see the full name of your project.
 . You will also need to sign in to your Google Cloud account and obtain credentials.
 The credentials will be used by the Hazelcast Pipeline to access the model endpoint.
 
++
 [source, bash]
 ----
 cd scoring-pipeline
@@ -149,6 +155,7 @@ cd scoring-pipeline
 cd ..
 ----
 
++
 Verfiy that you now have a `gcp-credentials.json` file in the `scoring-pipeline` 
 directory.
 
@@ -156,6 +163,8 @@ directory.
 . Compile the `scoring-pipeline` project.  This will ensure that generate the 
 protobuf-defined classes so they will be available before you open the 
 poject in an IDE.
+
++
 [source, bash]
 ----
 cd scoring-pipeline
@@ -180,8 +189,7 @@ StreamStage<Map.Entry<String, byte[]>> serializedAuthRequests = result.readFrom(
         .withIngestionTimestamps().setName("Input");
 ----
 
-Next, use the `StreamStage.map` method to unpack the byte array into a POJO:
- `AuthRequestV0`.
+Next, use the `StreamStage.map` method to unpack the byte array into a `AuthRequestV0` POJO.
 
 [source, java]
 ----
