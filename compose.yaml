@@ -24,4 +24,4 @@ services:
   event-sender:
     build:
       context: event-sender
-    command: python eventsender.py --dir data --tps 1 --hz-members hazelcast:5701 
+    command: python eventsender.py --dir data --tps 8 --hz-members hazelcast:5701
