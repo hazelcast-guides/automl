@@ -17,9 +17,17 @@ services:
 
   hazelcast-shell:
     image: hazelcast/hazelcast:5.2.0
-    command: tail -f /dev/null
     volumes:
       - ".:/opt/project"
+    command: >
+      hz-cli -v submit -c=com.hzsamples.automl.solution.PredictionPipeline
+        -t=dev@hazelcast
+        -n=fraud-prediction 
+      /opt/project/scoring-pipeline/target/scoring-pipeline-1.0-SNAPSHOT.jar  
+      /opt/project/scoring-pipeline/gcp-credentials.json 
+      hazelcast-33 
+      us-central1 
+      6989362321306943488
 
   event-sender:
     build:
